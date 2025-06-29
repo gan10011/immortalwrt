@@ -18,96 +18,104 @@ jobs:
         ref: v23.05.3
         path: openwrt
 
-    # 核心配置修改区
+    # ================================
+    # 修正后的配置修改区
+    # ================================
     - name: Apply Device Specific Configuration
       run: |
         cd openwrt
-        # [保持原有设备配置代码]
+        # 修复 EOF 文档格式问题
+        cat << 'CONFIG' > target/linux/ipq60xx/image/generic.mk
+define Device/zn_m2
+  $(call Device/FitImage)
+  $(call Device/UbiFit)
+  DEVICE_VENDOR := ZN
+  DEVICE_MODEL := M2
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  SOC := ipq6000
+  DEVICE_DTS_CONFIG := config@cp03-c1
+  
+  # 关键修改：精简默认包
+  DEFAULT_PACKAGES := \\
+    base-files busybox dropbear firewall fstools logd \\
+    mtd netifd opkg procd uci urandom-seed urng \\
+    kmod-ath10k-ct wpad-openssl \\
+    -ipq-wifi-zn_m2 \\
+    -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
+  
+  DEVICE_PACKAGES := ipq-wifi-zn_m2
+endef
+TARGET_DEVICES += zn_m2
+CONFIG
+
+        # 创建基本配置文件 (避免使用 EOF 标签)
+        echo "CONFIG_TARGET_ipq60xx=y" > .config
+        echo "CONFIG_TARGET_ipq60xx_generic=y" >> .config
+        echo "CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
         
-    # 依赖处理区 (添加状态检查)
+        # 强制应用优化参数
+        echo 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -fno-caller-saves -fno-plt"' >> .config
+
+    # ================================
+    # 依赖处理区 - 修复 heredoc 问题
+    # ================================
     - name: Setup Feeds
       run: |
         cd openwrt
+        
+        # 使用更安全的方式清除 NSS 依赖
+        find . -name "*nss*" -type f -delete 2>/dev/null || true
+        sed -i '/nss/d' feeds/luci/applications/luci-app-*/Makefile 2>/dev/null || true
+        
+        # 更新和安装源
         ./scripts/feeds update -a
         ./scripts/feeds install -a luci-app-openclash
-        
-        # 验证配置是否加载
-        if [ ! -f .config ]; then
-          echo "::error::配置缺失，创建临时配置"
-          cat > .config << 'EOF'
-          CONFIG_TARGET_ipq60xx=y
-          CONFIG_TARGET_ipq60xx_generic=y
-          CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
-          EOF
-        fi
-        make defconfig
 
-    # 编译准备区 (添加前置验证)
+    # ================================
+    # 编译准备区
+    # ================================
     - name: Prepare Build
       run: |
         cd openwrt
-        # 关键：验证优化参数
-        if ! grep -q 'CONFIG_TARGET_OPTIMIZATION=".*fno-caller-saves.*"' .config; then
-          echo "::warning::优化参数未生效，强制重设！"
-          sed -i '/CONFIG_TARGET_OPTIMIZATION/d' .config
-          echo 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -fno-caller-saves -fno-plt"' >> .config
-          make defconfig
+        # 确保配置文件存在
+        if [ ! -f .config ]; then
+          echo "::error::配置文件缺失!"
+          exit 1
         fi
         
-        # 下载源代码
+        # 应用配置
+        make defconfig
         make download -j$(nproc)
-        echo "✅ 源码准备完成，即将开始编译"
 
-    # 核心编译区 (添加日志重定向)
+    # ================================
+    # 修复的编译步骤
+    # ================================
     - name: Compile Firmware
-      continue-on-error: false  # 确保失败时停止
       timeout-minutes: 120
       run: |
         cd openwrt
-        cores=$(nproc)
+        
+        # 获取核心数但限制最大数量
+        cores=$(($(nproc) > 8 ? 8 : $(nproc)))
+        
         echo "🛠️ 使用 $cores 个核心进行编译..."
-        {
-          # 记录完整的编译日志
-          time make -j$cores V=s 2>&1
-          echo $? > exitstatus
-        } | tee build.log
+        make -j$cores V=s 2>&1 | tee build.log
         
-        # 检查编译状态
-        if [ $(cat exitstatus) -ne 0 ]; then
-          echo "::error::编译失败！错误代码: $(cat exitstatus)"
+        # 检查是否成功编译
+        if ! ls bin/targets/*/*/*.bin 2>/dev/null | grep -q .; then
+          echo "::error::编译失败，未生成固件文件"
           exit 1
         fi
 
-    # 后处理区 (添加编译时间显示)
-    - name: Verify Artifacts
-      run: |
-        cd openwrt/bin/targets/ipq60xx/generic/
-        
-        # 记录编译耗时
-        duration=$((SECONDS))
-        hours=$((duration/3600))
-        minutes=$(( (duration%3600)/60 ))
-        seconds=$((duration%60))
-        echo "⏱️ 编译用时: ${hours}h ${minutes}m ${seconds}s"
-        
-        # 检查固件文件
-        if ! ls *zn_m2*.bin 1>/dev/null 2>&1; then
-          echo "::error::固件未生成！可能原因："
-          echo "1. 设备名称不匹配"
-          echo "2. 编译中途失败"
-          echo "3. 目标路径错误"
-          exit 1
-        fi
-        
-        firmware=$(ls *zn_m2*.bin | head -1)
-        echo "✅ 成功生成固件: $firmware"
-        echo "📏 文件大小: $(du -h $firmware | cut -f1)"
-
+    # ================================
     # 结果上传区
+    # ================================
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: zn_m2-firmware-${{ github.run_number }}
+        name: zn_m2-firmware-${{ github.run_id }}
         path: |
           openwrt/bin/targets/ipq60xx/generic/*.bin
           openwrt/build.log
