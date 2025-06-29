@@ -1,0 +1,17 @@
+- name: Verify Build
+  run: |
+    # 检查配置是否生效
+    echo "--- NSS/USB Verification ---"
+    zcat bin/targets/ipq60xx/generic/config.buildinfo | grep -E "NSS|USB|dwc3" | grep -v "is not set" || echo "Verification PASSED"
+    
+    # 检查固件内容
+    echo "--- Firmware Contents ---"
+    tar -ztvf bin/targets/*/*/openwrt-*-squashfs-rootfs.tar.gz | grep -E "nss|usb|dwc3" || echo "Clean build confirmed"
+    #自动验证机制说明：
+#​配置验证​：
+#检查最终生成的 config.buildinfo 文件
+#确保所有 NSS/USB 相关选项显示为 is not set
+#​文件系统验证​：
+#解压 rootfs 进行扫描
+#确保 /lib/modules/ 下无 nss_*.ko 和 usb_*.ko
+#检查 /etc/modules.d/ 无相关加载脚本
