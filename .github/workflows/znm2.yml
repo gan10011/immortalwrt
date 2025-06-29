@@ -20,7 +20,7 @@ env:
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
   FIRMWARE_TAG: ZN_M2-WIFI
-  TZ: Asia/Shanghai
+  
 - name: Prepare Local Source
   run: |
     cd $GITHUB_WORKSPACE
