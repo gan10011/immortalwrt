@@ -1,4 +1,4 @@
-name: ZN_M2-WIFI-Lite
+name: znm2
 
 on:
   workflow_dispatch:
