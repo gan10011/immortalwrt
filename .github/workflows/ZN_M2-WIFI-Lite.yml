@@ -3,9 +3,9 @@ name: ZN_M2-WIFI-Lite
 on:
   workflow_dispatch:
 env:
-  REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
+  REPO_URL: https://github.com/${{ github.repository }}.git
   REPO_BRANCH: main
-  CONFIG_FILE: configs/imjingjian-lite.config  # 使用精简版配置
+  CONFIG_FILE: .config  # 使用精简版配置
   DIY_SCRIPT: ZN_M2-diy-script-lite.sh        # 使用精简版脚本
   FIRMWARE_TAG: ZN_M2-WIFI-Lite
   TZ: Asia/Shanghai
