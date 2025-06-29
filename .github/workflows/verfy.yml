@@ -1,36 +1,25 @@
-name: Build Stable OpenWrt for ZN-M2
+name: Build OpenWrt for ZN-M2
 
-on:
-  push:
-    branches: [ main ]
- # workflow_dispatch:
+on: [push]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-    
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout OpenWrt
       uses: actions/checkout@v4
       with:
         repository: openwrt/openwrt
-        ref: v23.05.3
+        ref: v23.05.2
         path: openwrt
 
-    # ================================
-    # 可靠的设备配置修改
-    # ================================
-    - name: Configure Device Settings
+    - name: Apply custom config
       run: |
-        cd openwrt
-        
-        # 使用变量简化操作
-        DEVICE_DIR="target/linux/ipq60xx/image"
-        mkdir -p $DEVICE_DIR
+        # 确保目录存在
+        mkdir -p openwrt/target/linux/ipq60xx/image/
         
         # 创建设备配置文件
-        cat > $DEVICE_DIR/generic.mk << 'END'
+        cat > openwrt/target/linux/ipq60xx/image/generic.mk << 'EOF'
 define Device/zn_m2
   $(call Device/FitImage)
   $(call Device/UbiFit)
@@ -44,88 +33,33 @@ define Device/zn_m2
   DEFAULT_PACKAGES := \
     base-files busybox dropbear firewall fstools logd \
     mtd netifd opkg procd uci urandom-seed urng \
-    kmod-ath10k-ct wpad-openssl \
+    kmod-ath10k-ct wpad-openssl luci-app-openclash \
     -ipq-wifi-zn_m2 \
     -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
   
   DEVICE_PACKAGES := ipq-wifi-zn_m2
 endef
 TARGET_DEVICES += zn_m2
-END
+EOF
         
         # 创建核心配置文件
-        {
-          echo "CONFIG_TARGET_ipq60xx=y"
-          echo "CONFIG_TARGET_ipq60xx_generic=y"
-          echo "CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y"
-          echo "CONFIG_PACKAGE_luci-app-openclash=y"
-          echo "CONFIG_PACKAGE_wpad-openssl=y"
-          echo "# 禁用NSS/USB"
-          echo "CONFIG_KERNEL_NSS_ENABLED=n"
-          echo "CONFIG_PACKAGE_kmod-usb-core=n"
-        } > .config
-      
-      # ================================
-      # 标准化编译流程
-      # ================================
-      - name: Prepare Environment
-        run: |
-          cd openwrt
-          
-          # 更新并安装依赖
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          
-          # 应用基本配置
-          make defconfig
-          
-          # 预下载源码
-          make download -j$(nproc)
-          
-          # 最后检查配置
-          if ! grep -q 'CONFIG_TARGET_DEVICE_zn_m2=y' .config; then
-            echo "::error::设备配置未加载!"
-            exit 1
-          fi
-    
-      # ================================
-      # 智能编译步骤
-      # ================================
-      - name: Compile Firmware
-        run: |
-          cd openwrt
-          
-          # 智能核心分配
-          AVAILABLE_CORES=$(nproc)
-          USABLE_CORES=$((AVAILABLE_CORES > 4 ? AVAILABLE_CORES - 2 : AVAILABLE_CORES))
-          
-          echo "🛠️ 使用 $USABLE_CORES 个核心进行编译..."
-          make -j$USABLE_CORES V=s 2>&1 | tee build.log
-          
-          # 编译后验证
-          if [ ! -d bin/targets/ipq60xx/generic ]; then
-            echo "::error::编译目录缺失!"
-            exit 1
-          fi
-          
-          if ! ls bin/targets/ipq60xx/generic/*zn_m2*.bin 1>/dev/null 2>&1; then
-            echo "::error::固件文件未生成!"
-            exit 1
-          fi
-          
-          # 显示成功信息
-          firmware=$(ls bin/targets/ipq60xx/generic/*zn_m2*.bin)
-          echo "✅ 固件生成成功: $(basename $firmware)"
-          echo "📏 大小: $(du -h $firmware | cut -f1)"
-    
-      # ================================
-      # 结果处理
-      # ================================
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: zn_m2-firmware-${{ github.run_id }}
-          path: |
-            openwrt/bin/targets/ipq60xx/generic/*.bin
-            openwrt/build.log
-          retention-days: 7
+        cat > openwrt/.config << 'EOF'
+CONFIG_TARGET_ipq60xx=y
+CONFIG_TARGET_ipq60xx_generic=y
+CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
+# 禁用NSS/USB
+CONFIG_KERNEL_NSS_ENABLED=n
+CONFIG_PACKAGE_kmod-usb-core=n
+# 启用必要组件
+CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_wpad-openssl=y
+EOF
+
+    - name: Compile
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        make defconfig
+        make download
+        make -j$(nproc)
