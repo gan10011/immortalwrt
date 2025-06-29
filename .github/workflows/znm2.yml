@@ -1,82 +1,178 @@
-name: Build OpenWrt for ZN-M2
 
-on: [push]
+name: ZN_M2-WIFI
+
+on:
+  workflow_dispatch:
+ # schedule:
+  #  - cron: 0 12 * * *
+inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+#CI权限
+permissions: write-all
+env:
+  LOCAL_REPO: ${{ github.workspace }}
+  REPO_BRANCH: main
+  CONFIG_FILE: .config
+  DIY_SCRIPT: ZN_M2-diy-script.sh
+  CLASH_KERNEL: amd64
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: false
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: ZN_M2-WIFI
+  TZ: Asia/Shanghai
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  Build:
+    runs-on: ubuntu-22.04
+
     steps:
-    - name: Checkout OpenWrt
-      uses: actions/checkout@v4
+    - name: Check Server Performance(检查服务器性能)
+      run: |
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
+        echo "--------------------------内存信息--------------------------"
+        echo "已安装内存详细信息："
+        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+    - name: Initialization Environment(初始化环境)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        docker rmi $(docker images -q)
+        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
+        sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+        sudo -E apt-get -y update
+        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo -E systemctl daemon-reload
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get -y clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Combine Disks(合并磁盘)
+      uses: easimon/maximize-build-space@master
       with:
-        repository: openwrt/openwrt
-        ref: v23.05.2
-        path: openwrt
-        
-    - name: Apply device config
-      run: |
-        # 安全创建设备配置（使用base64编码避免语法冲突）
-        DEVICE_DIR="openwrt/target/linux/ipq60xx/image"
-        mkdir -p $DEVICE_DIR
-        
-        # 设备配置内容（使用base64编码避免YAML解析问题）
-        base64 -d << "DEVICE_BASE64" > $DEVICE_DIR/generic.mk
-ZGVmaW5lIERldmljZS96bl9tMgogICQoY2FsbCBEZXZpY2UvRml0SW1hZ2UpCiAgJChjYWxsIERldmlj
-ZS9VYmlGaXQpCiAgREVWSUNFX1ZFTkRPUiA6PSBaTgogIERFVklDRV9NT0RFTCA6PSBNMgogIEJMT0NL
-U0laRSA6PSAxMjhrCiAgUEFHRVNJWkUgOj0gMjA0OAogIFNPQyA6PSBpcHE2MDAwCiAgREVWSUNFX0RU
-U19DT05GSUcgOj0gY29uZmlnQEMwMy1jMQogIAogIERFRkFVTFRfUEFDS0FHRVMgOj0gXAogICAgYmFz
-ZS1maWxlcyBidXN5Ym94IGRyb3BiZWFyIGZpcmV3YWxsIGZzdG9vbHMgbG9nZCBcCiAgICBtdGQgbmV0
-aWZkIG9wa2cgcHJvY2QgdWNpIHVyYW5kb20tc2VlZCB1cm5nIFwKICAgIGttb2QtYXRoMTBrLWN0IHdw
-YWQtb3BlbnNzbCBsYWNpLWFwcC1vcGVuY2xhc2ggXAogICAgLWlwcS13aWZpLXpuX20yIFwKICAgIC1r
-bW9kLW5zcy0qIC1rbW9kLXVzYiogLWttb2Qtd3NmZWtlcXR3KiAtcHBwKiAtcWNhLSoKICAKICBERVZJ
-Q0VfUEFDS0FHRVMgOj0gaXBxLXdpZmktem5fbTIKZW5kZWYKVEFSR0VUX0RFVklDRVMgKz0gem5fbTI=
-DEVICE_BASE64
-        
-        # 解码base64内容（原始设备配置）
-        # define Device/zn_m2
-        #   $(call Device/FitImage)
-        #   $(call Device/UbiFit)
-        #   DEVICE_VENDOR := ZN
-        #   DEVICE_MODEL := M2
-        #   BLOCKSIZE := 128k
-        #   PAGESIZE := 2048
-        #   SOC := ipq6000
-        #   DEVICE_DTS_CONFIG := config@cp03-c1
-        #   
-        #   DEFAULT_PACKAGES := \
-        #     base-files busybox dropbear firewall fstools logd \
-        #     mtd netifd opkg procd uci urandom-seed urng \
-        #     kmod-ath10k-ct wpad-openssl luci-app-openclash \
-        #     -ipq-wifi-zn_m2 \
-        #     -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
-        #   
-        #   DEVICE_PACKAGES := ipq-wifi-zn_m2
-        # endef
-        # TARGET_DEVICES += zn_m2
-    
-    - name: Apply build config
-      run: |
-        # 安全创建.config文件
-        cat << 'BUILD_CFG' > openwrt/.config
-# 目标平台设置
-CONFIG_TARGET_ipq60xx=y
-CONFIG_TARGET_ipq60xx_generic=y
-CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
+        swap-size-mb: 4096
+        temp-reserve-mb: 1000
+        root-reserve-mb: 4096
 
-# 禁用不需要的组件
-CONFIG_KERNEL_NSS_ENABLED=n
-CONFIG_PACKAGE_kmod-usb-core=n
+    - name: Checkout
+      uses: actions/checkout@main
 
-# 启用必要的功能
-CONFIG_PACKAGE_luci-app-openclash=y
-CONFIG_PACKAGE_wpad-openssl=y
-BUILD_CFG
-
-    - name: Compile firmware
+    - name: Clone Source Code(克隆源代码)
       run: |
+        df -hT $GITHUB_WORKSPACE
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
         cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+        echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+
+    - name: Generate Variables(生成变量)
+      run: |
+        cp $CONFIG_FILE $OPENWRT_PATH/.config
+        cd $OPENWRT_PATH
+        make defconfig > /dev/null 2>&1
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+    - name: Cache Toolchain(缓存工具链)
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
+    
+    - name: Install Feeds(安装feeds)
+      run: |
+        cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+  
+    - name: Load Custom Configuration(加载自定义配置)
+      run: |
+        [ -e files ] && mv files $OPENWRT_PATH/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+
+    - name: Download DL Package(下载DL软件包)
+      run: |
+        cd $OPENWRT_PATH
         make defconfig
-        make download
-        make -j$(nproc)
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile Firmware(开始编译固件)
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+    - name: Check Space Usage(检查空间使用情况)
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload Bin Directory(上传固件)
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        path: ${{ env.OPENWRT_PATH }}/bin
+
+    - name: Organize Files(整理文件)
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        cat sha256sums
+        cp $OPENWRT_PATH/.config build.config
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
+        tar -zcf Packages.tar.gz packages
+        rm -rf packages feeds.buildinfo version.buildinfo
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Upload Firmware To Artifact(将固件上传到Artifact)
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE_PATH }}
+
+    - name: Upload Firmware To Release(发布固件)
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
+        allowUpdates: true
+        tag: ${{ env.FIRMWARE_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
+          ### 📒 固件信息(WIFI)
+          - WIFI带有线NSS的6.6内核固件
+          - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的 OpenWrt 固件
+          - ⚽ 固件源码: ${{ env.REPO_URL }}
+          - 💝 源码分支: ${{ env.REPO_BRANCH }}
+          - 🌐 默认地址: 192.168.1.1
+          - 🔑 默认密码: password
+          ### 🧊 固件版本
+          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
+          - ${{ env.VERSION_INFO }}
