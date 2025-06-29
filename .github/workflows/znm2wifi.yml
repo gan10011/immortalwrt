@@ -11,54 +11,53 @@ jobs:
       with:
         repository: openwrt/openwrt
         ref: v23.05.2
-        path: openwrt
 
-    - name: Apply device config
+    # 应用您的专属配置（关键步骤）
+    - name: Apply custom config
       run: |
-        # 安全创建设备配置
-        DEVICE_DIR="openwrt/target/linux/ipq60xx/image"
-        mkdir -p $DEVICE_DIR
+        # 覆盖设备定义文件
+        mkdir -p target/linux/ipq60xx/image/
+        cat > target/linux/ipq60xx/image/generic.mk << 'EOF'
+        define Device/zn_m2
+          $(call Device/FitImage)
+          $(call Device/UbiFit)
+          DEVICE_VENDOR := ZN
+          DEVICE_MODEL := M2
+          BLOCKSIZE := 128k
+          PAGESIZE := 2048
+          SOC := ipq6000
+          DEVICE_DTS_CONFIG := config@cp03-c1
+          
+          DEFAULT_PACKAGES := \
+            base-files busybox dropbear firewall fstools logd \
+            mtd netifd opkg procd uci urandom-seed urng \
+            kmod-ath10k-ct wpad-openssl luci-app-openclash \
+            -ipq-wifi-zn_m2 \
+            -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
+          
+          DEVICE_PACKAGES := ipq-wifi-zn_m2
+        endef
+        TARGET_DEVICES += zn_m2
+        EOF
         
-        cat << 'DEVICE_CFG' > $DEVICE_DIR/generic.mk
-define Device/zn_m2
-  \$(call Device/FitImage)
-  \$(call Device/UbiFit)
-  DEVICE_VENDOR := ZN
-  DEVICE_MODEL := M2
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  SOC := ipq6000
-  DEVICE_DTS_CONFIG := config@cp03-c1
-  
-  DEFAULT_PACKAGES := \\
-    base-files busybox dropbear firewall fstools logd \\
-    mtd netifd opkg procd uci urandom-seed urng \\
-    kmod-ath10k-ct wpad-openssl luci-app-openclash \\
-    -ipq-wifi-zn_m2 \\
-    -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
-  
-  DEVICE_PACKAGES := ipq-wifi-zn_m2
-endef
-TARGET_DEVICES += zn_m2
-DEVICE_CFG
+        # 应用核心配置
+        cat > .config << 'EOF'
+        CONFIG_TARGET_ipq60xx=y
+        CONFIG_TARGET_ipq60xx_generic=y
+        CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
+        
+        # 禁用NSS/USB
+        CONFIG_KERNEL_NSS_ENABLED=n
+        CONFIG_PACKAGE_kmod-usb-core=n
+        
+        # 启用必要组件
+        CONFIG_PACKAGE_luci-app-openclash=y
+        CONFIG_PACKAGE_wpad-openssl=y
+        EOF
 
-    - name: Apply build config
+    # 标准编译流程
+    - name: Compile
       run: |
-        cat << 'BUILD_CFG' > openwrt/.config
-CONFIG_TARGET_ipq60xx=y
-CONFIG_TARGET_ipq60xx_generic=y
-CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
-# 禁用NSS/USB
-CONFIG_KERNEL_NSS_ENABLED=n
-CONFIG_PACKAGE_kmod-usb-core=n
-# 启用必要组件
-CONFIG_PACKAGE_luci-app-openclash=y
-CONFIG_PACKAGE_wpad-openssl=y
-BUILD_CFG
-
-    - name: Compile firmware
-      run: |
-        cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         make defconfig
