@@ -1,4 +1,4 @@
-name: Build Lean OpenWrt for ZN-M2
+name: Build Stable OpenWrt for ZN-M2
 
 on:
   push:
@@ -19,13 +19,18 @@ jobs:
         path: openwrt
 
     # ================================
-    # 修正后的配置修改区
+    # 可靠的设备配置修改
     # ================================
-    - name: Apply Device Specific Configuration
+    - name: Configure Device Settings
       run: |
         cd openwrt
-        # 修复 EOF 文档格式问题
-        cat << 'CONFIG' > target/linux/ipq60xx/image/generic.mk
+        
+        # 使用变量简化操作
+        DEVICE_DIR="target/linux/ipq60xx/image"
+        mkdir -p $DEVICE_DIR
+        
+        # 创建设备配置文件
+        cat > $DEVICE_DIR/generic.mk << 'END'
 define Device/zn_m2
   $(call Device/FitImage)
   $(call Device/UbiFit)
@@ -36,87 +41,91 @@ define Device/zn_m2
   SOC := ipq6000
   DEVICE_DTS_CONFIG := config@cp03-c1
   
-  # 关键修改：精简默认包
-  DEFAULT_PACKAGES := \\
-    base-files busybox dropbear firewall fstools logd \\
-    mtd netifd opkg procd uci urandom-seed urng \\
-    kmod-ath10k-ct wpad-openssl \\
-    -ipq-wifi-zn_m2 \\
+  DEFAULT_PACKAGES := \
+    base-files busybox dropbear firewall fstools logd \
+    mtd netifd opkg procd uci urandom-seed urng \
+    kmod-ath10k-ct wpad-openssl \
+    -ipq-wifi-zn_m2 \
     -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
   
   DEVICE_PACKAGES := ipq-wifi-zn_m2
 endef
 TARGET_DEVICES += zn_m2
-CONFIG
-
-        # 创建基本配置文件 (避免使用 EOF 标签)
-        echo "CONFIG_TARGET_ipq60xx=y" > .config
-        echo "CONFIG_TARGET_ipq60xx_generic=y" >> .config
-        echo "CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+END
         
-        # 强制应用优化参数
-        echo 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -fno-caller-saves -fno-plt"' >> .config
-
-    # ================================
-    # 依赖处理区 - 修复 heredoc 问题
-    # ================================
-    - name: Setup Feeds
-      run: |
-        cd openwrt
-        
-        # 使用更安全的方式清除 NSS 依赖
-        find . -name "*nss*" -type f -delete 2>/dev/null || true
-        sed -i '/nss/d' feeds/luci/applications/luci-app-*/Makefile 2>/dev/null || true
-        
-        # 更新和安装源
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a luci-app-openclash
-
-    # ================================
-    # 编译准备区
-    # ================================
-    - name: Prepare Build
-      run: |
-        cd openwrt
-        # 确保配置文件存在
-        if [ ! -f .config ]; then
-          echo "::error::配置文件缺失!"
-          exit 1
-        fi
-        
-        # 应用配置
-        make defconfig
-        make download -j$(nproc)
-
-    # ================================
-    # 修复的编译步骤
-    # ================================
-    - name: Compile Firmware
-      timeout-minutes: 120
-      run: |
-        cd openwrt
-        
-        # 获取核心数但限制最大数量
-        cores=$(($(nproc) > 8 ? 8 : $(nproc)))
-        
-        echo "🛠️ 使用 $cores 个核心进行编译..."
-        make -j$cores V=s 2>&1 | tee build.log
-        
-        # 检查是否成功编译
-        if ! ls bin/targets/*/*/*.bin 2>/dev/null | grep -q .; then
-          echo "::error::编译失败，未生成固件文件"
-          exit 1
-        fi
-
-    # ================================
-    # 结果上传区
-    # ================================
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: zn_m2-firmware-${{ github.run_id }}
-        path: |
-          openwrt/bin/targets/ipq60xx/generic/*.bin
-          openwrt/build.log
-        retention-days: 3
+        # 创建核心配置文件
+        {
+          echo "CONFIG_TARGET_ipq60xx=y"
+          echo "CONFIG_TARGET_ipq60xx_generic=y"
+          echo "CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y"
+          echo "CONFIG_PACKAGE_luci-app-openclash=y"
+          echo "CONFIG_PACKAGE_wpad-openssl=y"
+          echo "# 禁用NSS/USB"
+          echo "CONFIG_KERNEL_NSS_ENABLED=n"
+          echo "CONFIG_PACKAGE_kmod-usb-core=n"
+        } > .config
+      
+      # ================================
+      # 标准化编译流程
+      # ================================
+      - name: Prepare Environment
+        run: |
+          cd openwrt
+          
+          # 更新并安装依赖
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # 应用基本配置
+          make defconfig
+          
+          # 预下载源码
+          make download -j$(nproc)
+          
+          # 最后检查配置
+          if ! grep -q 'CONFIG_TARGET_DEVICE_zn_m2=y' .config; then
+            echo "::error::设备配置未加载!"
+            exit 1
+          fi
+    
+      # ================================
+      # 智能编译步骤
+      # ================================
+      - name: Compile Firmware
+        run: |
+          cd openwrt
+          
+          # 智能核心分配
+          AVAILABLE_CORES=$(nproc)
+          USABLE_CORES=$((AVAILABLE_CORES > 4 ? AVAILABLE_CORES - 2 : AVAILABLE_CORES))
+          
+          echo "🛠️ 使用 $USABLE_CORES 个核心进行编译..."
+          make -j$USABLE_CORES V=s 2>&1 | tee build.log
+          
+          # 编译后验证
+          if [ ! -d bin/targets/ipq60xx/generic ]; then
+            echo "::error::编译目录缺失!"
+            exit 1
+          fi
+          
+          if ! ls bin/targets/ipq60xx/generic/*zn_m2*.bin 1>/dev/null 2>&1; then
+            echo "::error::固件文件未生成!"
+            exit 1
+          fi
+          
+          # 显示成功信息
+          firmware=$(ls bin/targets/ipq60xx/generic/*zn_m2*.bin)
+          echo "✅ 固件生成成功: $(basename $firmware)"
+          echo "📏 大小: $(du -h $firmware | cut -f1)"
+    
+      # ================================
+      # 结果处理
+      # ================================
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zn_m2-firmware-${{ github.run_id }}
+          path: |
+            openwrt/bin/targets/ipq60xx/generic/*.bin
+            openwrt/build.log
+          retention-days: 7
