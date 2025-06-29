@@ -1,108 +1,151 @@
-name: znm2wifi
+name: ZN_M2-WIFI-Local
 
 on:
   workflow_dispatch:
+  # schedule:
+  #   - cron: 0 12 * * *
+
+permissions: write-all
+
 env:
-  # 使用当前仓库作为源码源
-  LOCAL_REPO: ${{ github.workspace }}
-  CONFIG_FILE: configs/imjingjian-lite.config
+  CONFIG_FILE: .config
   DIY_SCRIPT: ZN_M2-diy-script-lite.sh
-  FIRMWARE_TAG: ZN_M2-WIFI-Lite
+  CLASH_KERNEL: amd64
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: false
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: ZN_M2-WIFI
   TZ: Asia/Shanghai
 
 jobs:
   Build:
     runs-on: ubuntu-22.04
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        # 启用子模块支持（如果使用）
-        submodules: recursive
-        # 获取完整历史记录（可选）
-        fetch-depth: 0
-
-    - name: Check Server Performance
+    - name: Check Server Performance(检查服务器性能)
       run: |
-        echo "警告: 此编译针对低内存设备优化"
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
         echo "--------------------------内存信息--------------------------"
-        free -h
+        echo "已安装内存详细信息："
+        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
-    - name: Initialization Environment
+    - name: Initialization Environment(初始化环境)
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo apt-get update
-        sudo apt-get -y install build-essential clang flex g++ gawk gcc-multilib \
-          gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev
+        docker rmi $(docker images -q) || true
+        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
+        sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+        sudo -E apt-get -y update
+        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo -E systemctl daemon-reload
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get -y clean
+        sudo timedatectl set-timezone "$TZ"
 
-    - name: Combine Disks
+    - name: Combine Disks(合并磁盘)
       uses: easimon/maximize-build-space@master
       with:
-        swap-size-mb: 2048
-        temp-reserve-mb: 512
-        root-reserve-mb: 2048
+        swap-size-mb: 4096
+        temp-reserve-mb: 1000
+        root-reserve-mb: 4096
 
-    - name: Prepare Local Source
+    - name: Checkout Local Repository(检出本地仓库)
+      uses: actions/checkout@v4
+      with:
+        path: openwrt
+        fetch-depth: 0
+
+    - name: Setup Build Environment(设置编译环境)
       run: |
-        # 设置OpenWrt源代码路径
-        echo "OPENWRT_PATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
-        
-        # 添加仓库信息到环境变量
-        VERSION_INFO=$(git log -1 --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
         echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
-        
-        # 获取分支信息
-        REPO_BRANCH=$(git branch --show-current)
-        echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
-        echo "SOURCE_REPO=$(basename $GITHUB_REPOSITORY)" >> $GITHUB_ENV
+        echo "REPO_URL=$(git remote get-url origin)" >> $GITHUB_ENV
+        echo "REPO_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
 
-    - name: Apply Lite Configuration
+    - name: Generate Variables(生成变量)
       run: |
         cd $OPENWRT_PATH
         cp $CONFIG_FILE .config
-        cp $DIY_SCRIPT .
-        chmod +x $DIY_SCRIPT
-        ./$DIY_SCRIPT
+        make defconfig > /dev/null 2>&1
+        SOURCE_REPO="$(basename $REPO_URL .git)"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}')
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
 
-    - name: Download DL Package
+    - name: Cache Toolchain(缓存工具链)
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.OPENWRT_PATH }}/dl
+        key: ${{ runner.os }}-toolchain-${{ env.SOURCE_REPO }}-${{ hashFiles('${{ env.OPENWRT_PATH }}/.config') }}
+        restore-keys: |
+          ${{ runner.os }}-toolchain-${{ env.SOURCE_REPO }}-
+
+    - name: Install Feeds(安装feeds)
       run: |
         cd $OPENWRT_PATH
-        make download -j4
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Apply Custom Files(应用自定义文件)
+      run: |
+        [ -d $GITHUB_WORKSPACE/files ] && cp -rf $GITHUB_WORKSPACE/files $OPENWRT_PATH/
+        [ -f $GITHUB_WORKSPACE/$DIY_SCRIPT ] && bash $GITHUB_WORKSPACE/$DIY_SCRIPT
+
+    - name: Download Packages(下载软件包)
+      run: |
+        cd $OPENWRT_PATH
+        make defconfig
+        make download -j$(nproc)
         find dl -size -1024c -delete
 
-    - name: Compile Lite Firmware
+    - name: Compile Firmware(编译固件)
       id: compile
       run: |
         cd $OPENWRT_PATH
-        echo "低内存优化编译 (使用-j2减少内存占用)"
-        make -j2 || make -j1 V=s
+        make -j$(($(nproc)+1)) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        echo "DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
 
-    - name: Organize Files
+    - name: Organize Artifacts(整理固件)
       if: steps.compile.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
-        # 仅保留必要文件
+        cp $OPENWRT_PATH/.config build.config
+        mkdir -p packages
+        find $OPENWRT_PATH/bin/packages -name '*.ipk' -exec mv {} packages/ \;
+        tar -zcf Packages.tar.gz packages
         rm -rf packages
-        find . -type f $ -name "*.ipk" -o -name "*.manifest" $ -delete
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
-    - name: Upload Firmware To Release
-      if: steps.compile.outputs.status == 'success'
+    - name: Upload to Release(发布固件)
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ env.FIRMWARE_TAG }}
-        name: Lite Firmware for Low-Memory Devices (${{ env.FILE_DATE }})
+        name: ${{ env.FIRMWARE_TAG }} - ${{ env.DATE }}
         body: |
-          ## 精简版固件 - 低内存优化
-          - 移除了NSS和USB功能
-          - 针对64-128MB内存设备优化
-          - 默认地址: 192.168.1.1
-          - 默认密码: password
-          ### 源码信息
-          - 仓库: ${{ github.repository }}
-          - 分支: ${{ env.REPO_BRANCH }}
-          - 版本信息: ${{ env.VERSION_INFO }}
-        files: ${{ env.FIRMWARE_PATH }}/*.bin
+          ### 🧾 固件信息
+          **设备**: 兆能M2 (ZN-M2)  
+          **内核**: 6.6 with NSS加速  
+          **源码**: [${{ env.SOURCE_REPO }}@${{ env.REPO_BRANCH }}](${{ env.REPO_URL }})  
+          **管理地址**: 192.168.1.1  
+          **默认密码**: password  
+
+          ### 📜 更新记录
+          ${{ env.VERSION_INFO }}
+        files: ${{ env.FIRMWARE_PATH }}/*
