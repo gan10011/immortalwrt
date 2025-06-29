@@ -1,6 +1,4 @@
-
 name: ZN_M2-WIFI
-
 on:
   workflow_dispatch:
  # schedule:
