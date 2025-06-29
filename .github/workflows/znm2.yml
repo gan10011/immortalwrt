@@ -23,7 +23,20 @@ env:
   FIRMWARE_RELEASE: true
   FIRMWARE_TAG: ZN_M2-WIFI
   TZ: Asia/Shanghai
+- name: Prepare Local Source
+  run: |
+    cd $GITHUB_WORKSPACE
+    # 设置OpenWrt源代码路径
+    echo "OPENWRT_PATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
 
+    # 添加仓库信息到环境变量
+    VERSION_INFO=$(git log -1 --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+    echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+
+    # 获取分支信息
+    REPO_BRANCH=$(git branch --show-current)
+    echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+    echo "SOURCE_REPO=$(basename $GITHUB_REPOSITORY)" >> $GITHUB_ENV
 jobs:
   Build:
     runs-on: ubuntu-22.04
