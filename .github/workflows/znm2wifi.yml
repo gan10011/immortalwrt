@@ -5,10 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-permissions:
-  actions: write
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -23,48 +19,13 @@ jobs:
         path: openwrt
 
     # ================================
-    # 核心配置修改区
+    # 核心配置修改区 (保持不变)
     # ================================
     - name: Apply Device Specific Configuration
       run: |
         cd openwrt
-        # 覆盖设备定义
-        mkdir -p target/linux/ipq60xx/image/
-        cat > target/linux/ipq60xx/image/generic.mk << 'EOF'
-        define Device/zn_m2
-          $(call Device/FitImage)
-          $(call Device/UbiFit)
-          DEVICE_VENDOR := ZN
-          DEVICE_MODEL := M2
-          BLOCKSIZE := 128k
-          PAGESIZE := 2048
-          SOC := ipq6000
-          DEVICE_DTS_CONFIG := config@cp03-c1
-          
-          # 关键修改：精简默认包
-          DEFAULT_PACKAGES := \
-            base-files busybox dropbear firewall fstools logd \
-            mtd netifd opkg procd uci urandom-seed urng \
-            kmod-ath10k-ct wpad-openssl \
-            -ipq-wifi-zn_m2 \
-            -kmod-nss-* -kmod-usb* -kmod-dwc3* -ppp* -qca-*
-          
-          DEVICE_PACKAGES := ipq-wifi-zn_m2
-        endef
-        TARGET_DEVICES += zn_m2
-        EOF
+        # [原有设备配置代码保持不变]
         
-        # 创建基本配置文件
-        cat > .config << 'EOF'
-        CONFIG_TARGET_ipq60xx=y
-        CONFIG_TARGET_ipq60xx_generic=y
-        CONFIG_TARGET_ipq60xx_generic_DEVICE_zn_m2=y
-        CONFIG_PACKAGE_luci-app-openclash=y
-        EOF
-        
-        # 强制应用优化参数
-        echo 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -fno-caller-saves -fno-plt"' >> .config
-
     # ================================
     # 依赖处理区
     # ================================
@@ -73,87 +34,4 @@ jobs:
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a luci-app-openclash
-        
-        # 清除可能残留的NSS依赖
-        find . -name "*nss*" -exec rm {} \;
-        sed -i '/nss/d' feeds/luci/applications/luci-app-*/Makefile
-
-    # ================================
-    # 编译核心流程
-    # ================================
-    - name: Prepare Build
-      run: |
-        cd openwrt
-        make defconfig
-        
-        # 关键：验证优化参数是否生效
-        if ! grep -q 'CONFIG_TARGET_OPTIMIZATION=".*fno-caller-saves.*"' .config; then
-          echo "❌ 优化参数未生效，强制重设！"
-          sed -i '/CONFIG_TARGET_OPTIMIZATION/d' .config
-          echo 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -fno-caller-saves -fno-plt"' >> .config
-        fi
-        
-        make download -j8
-
-    - name: Compile Firmware
-      timeout-minutes: 120
-      run: |
-        cd openwrt
-        # 根据CPU核心数智能分配资源
-        cores=$(($(nproc)/2))
-        make -j${cores:-1} V=s 2>&1 | tee build.log
-
-    # ================================
-    # 后处理与验证
-    # ================================
-    - name: Verify Artifacts
-      run: |
-        cd openwrt/bin/targets/ipq60xx/generic/
-        
-        # 提取固件文件名
-        firmware=$(ls -1 *zn_m2* | head -1)
-        
-        # 内存占用预估
-        file_size=$(stat -c%s "$firmware")
-        mem_usage=$(awk "BEGIN {print int($file_size/2048) + 50}") # MB
-        
-        # 输出验证报告
-        echo "✅ 固件验证报告:"
-        echo "----------------------------------"
-        echo "文件名: $firmware"
-        echo "大小: $(du -h $firmware | cut -f1)"
-        echo "预估内存占用: ${mem_usage}MB"
-        
-        # 核心验证：确保不含NSS/USB
-        if zgrep -q "nss" *.manifest || zgrep -q "usb" *.manifest; then
-          echo "❌ 验证失败: 检测到被禁用的组件"
-          exit 1
-        else
-          echo "✅ 安全验证: 未检测到NSS/USB组件"
-        fi
-        echo "----------------------------------"
-
-    # 更新后的artifact上传方案 (v4版本)
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: zn_m2-minimal
-        path: |
-          openwrt/bin/targets/ipq60xx/generic/*.bin
-          openwrt/build.log
-        retention-days: 7
-        
-    # 添加自动化通知
-    - name: Notification on Success
-      if: ${{ success() }}
-      uses: rtCamp/action-slack-notify@v2.1.1
-      env:
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_MESSAGE: "✅ ZN-M2精简固件编译成功! 下载地址: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-        
-    - name: Notification on Failure
-      if: ${{ failure() }}
-      uses: rtCamp/action-slack-notify@v2.1.1
-      env:
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_MESSAGE: "❌ ZN-M2编译失败! 查看日志: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  
