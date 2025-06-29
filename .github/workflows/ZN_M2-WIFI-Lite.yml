@@ -1,0 +1,90 @@
+name: ZN_M2-WIFI-Lite
+
+on:
+  workflow_dispatch:
+env:
+  REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
+  REPO_BRANCH: main
+  CONFIG_FILE: configs/imjingjian-lite.config  # 使用精简版配置
+  DIY_SCRIPT: ZN_M2-diy-script-lite.sh        # 使用精简版脚本
+  FIRMWARE_TAG: ZN_M2-WIFI-Lite
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Check Server Performance
+      run: |
+        echo "警告: 此编译针对低内存设备优化"
+        echo "--------------------------内存信息--------------------------"
+        free -h
+
+    - name: Initialization Environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install build-essential clang flex g++ gawk gcc-multilib \
+          gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev
+
+    - name: Combine Disks
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 2048
+        temp-reserve-mb: 512
+        root-reserve-mb: 2048
+
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Clone Source Code
+      run: |
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Apply Lite Configuration
+      run: |
+        cd $OPENWRT_PATH
+        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        cp $GITHUB_WORKSPACE/$DIY_SCRIPT .
+        chmod +x $DIY_SCRIPT
+        ./$DIY_SCRIPT
+
+    - name: Download DL Package
+      run: |
+        cd $OPENWRT_PATH
+        make download -j4
+        find dl -size -1024c -delete
+
+    - name: Compile Lite Firmware
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        echo "低内存优化编译 (使用-j2减少内存占用)"
+        make -j2 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Organize Files
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        # 仅保留必要文件
+        rm -rf packages
+        find . -type f $ -name "*.ipk" -o -name "*.manifest" $ -delete
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Upload Firmware To Release
+      if: steps.compile.outputs.status == 'success'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.FIRMWARE_TAG }}
+        name: Lite Firmware for Low-Memory Devices
+        body: |
+          ## 精简版固件 - 低内存优化
+          - 移除了NSS和USB功能
+          - 针对64-128MB内存设备优化
+          - 默认地址: 192.168.1.1
+          - 默认密码: password
+        files: ${{ env.FIRMWARE_PATH }}/*.bin
