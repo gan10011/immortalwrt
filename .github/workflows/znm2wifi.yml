@@ -58,15 +58,15 @@ jobs:
         temp-reserve-mb: 1000
         root-reserve-mb: 4096
 
-    - name: Checkout Local Repository(检出本地仓库)
+    - name: Checkout Repository(检出仓库)
       uses: actions/checkout@v4
       with:
-        path: openwrt
+        path: immortalwrt  # 使用仓库名作为路径
         fetch-depth: 0
 
     - name: Setup Build Environment(设置编译环境)
       run: |
-        cd openwrt
+        cd immortalwrt  # 使用仓库名作为路径
         echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
         VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
         echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
@@ -76,7 +76,19 @@ jobs:
     - name: Generate Variables(生成变量)
       run: |
         cd $OPENWRT_PATH
-        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        
+        # 确保配置文件存在
+        CONFIG_PATH="$GITHUB_WORKSPACE/$CONFIG_FILE"
+        if [ ! -f "$CONFIG_PATH" ]; then
+          echo "::error::找不到配置文件 $CONFIG_PATH"
+          echo "工作区内容:"
+          ls -la $GITHUB_WORKSPACE
+          exit 1
+        fi
+        
+        echo "使用配置文件: $CONFIG_PATH"
+        cp "$CONFIG_PATH" .config
+        
         make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(basename $REPO_URL .git)"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -84,6 +96,21 @@ jobs:
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
         DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}')
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+    - name: Apply Custom Script(应用自定义脚本)
+      run: |
+        SCRIPT_PATH="$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        if [ -f "$SCRIPT_PATH" ]; then
+          echo "应用兆能M2精简脚本..."
+          chmod +x "$SCRIPT_PATH"
+          cd $OPENWRT_PATH
+          bash -x "$SCRIPT_PATH" || {
+            echo "::error::自定义脚本执行失败"
+            exit 1
+          }
+        else
+          echo "未找到自定义脚本 $SCRIPT_PATH，跳过"
+        fi
 
     - name: Cache Toolchain(缓存工具链)
       if: env.CACHE_TOOLCHAIN == 'true'
@@ -100,31 +127,15 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # 修改开始：分离文件复制和脚本执行
     - name: Apply Custom Files(应用自定义文件)
       run: |
-        if [ -d $GITHUB_WORKSPACE/files ]; then
+        FILES_PATH="$GITHUB_WORKSPACE/files"
+        if [ -d "$FILES_PATH" ]; then
           echo "找到自定义文件目录，正在复制到 $OPENWRT_PATH..."
-          cp -rfv $GITHUB_WORKSPACE/files $OPENWRT_PATH/
-          echo "文件复制完成"
+          cp -rfv "$FILES_PATH" $OPENWRT_PATH/
         else
           echo "未找到自定义文件目录，跳过"
         fi
-
-    - name: Execute Custom Script(执行自定义脚本)
-      run: |
-        if [ -f $GITHUB_WORKSPACE/$DIY_SCRIPT ]; then
-          echo "找到自定义脚本 $DIY_SCRIPT，正在执行..."
-          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
-          bash -x $GITHUB_WORKSPACE/$DIY_SCRIPT || {
-            echo "脚本执行失败！退出码: $?"
-            exit 1
-          }
-          echo "脚本执行完成"
-        else
-          echo "未找到自定义脚本，跳过"
-        fi
-    # 修改结束
 
     - name: Download Packages(下载软件包)
       run: |
