@@ -1,0 +1,120 @@
+name: ZN_M2-OWRT-Branch
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: 0 12 * * *
+
+permissions: write-all
+
+env:
+  CONFIG_FILE: owrt.config
+  CACHE_TOOLCHAIN: true
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: ZN_M2-OWRT
+  TZ: Asia/Shanghai
+  OWRT_BRANCH: openwrt-23.05  # 替换为实际的owrt分支名
+
+jobs:
+  Build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Initialization Environment(初始化环境)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Checkout Repository(检出仓库)
+      uses: actions/checkout@v4
+      with:
+        path: openwrt
+        ref: ${{ env.OWRT_BRANCH }}
+        fetch-depth: 0
+
+    - name: Setup Build Environment(设置编译环境)
+      run: |
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+        echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+        
+        # 验证配置文件存在
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "::warning::配置文件 $CONFIG_FILE 不存在，使用默认配置"
+          # 生成兆能M2基础配置
+          cat > .config <<EOF
+CONFIG_TARGET_ipq60xx=y
+CONFIG_TARGET_ipq60xx_DEVICE_zn_m2=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_kmod-ath11k=y
+CONFIG_PACKAGE_kmod-ath11k-ahb=y
+CONFIG_PACKAGE_hostapd=y
+EOF
+        else
+          cp "$CONFIG_FILE" .config
+        fi
+
+    - name: Configure for ZN-M2(配置兆能M2)
+      run: |
+        cd $OPENWRT_PATH
+        
+        # 确保兆能M2配置
+        echo "CONFIG_TARGET_ipq60xx=y" >> .config
+        echo "CONFIG_TARGET_ipq60xx_DEVICE_zn_m2=y" >> .config
+        
+        # 设置中文
+        echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+        
+        # 启用WiFi驱动
+        echo "CONFIG_PACKAGE_kmod-ath11k=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y" >> .config
+        echo "CONFIG_PACKAGE_hostapd=y" >> .config
+        
+        # 生成最终配置
+        make defconfig > /dev/null 2>&1
+        
+        # 显示关键配置
+        grep "CONFIG_TARGET\|CONFIG_PACKAGE" .config
+
+    - name: Install Feeds(安装feeds)
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Compile Firmware(编译固件)
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        make -j$(($(nproc)+1)) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+
+    - name: Organize Artifacts(整理固件)
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/ipq60xx/*
+        cp $OPENWRT_PATH/.config build.config
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Upload to Release(发布固件)
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.FIRMWARE_TAG }}
+        name: ${{ env.FIRMWARE_TAG }} - ${{ env.DATE }}
+        body: |
+          ### 🧾 OpenWrt官方分支固件
+          **设备**: 兆能M2 (ZN-M2)  
+          **分支**: ${{ env.OWRT_BRANCH }}  
+          **特点**: 官方稳定版 + 中文界面  
+          **管理地址**: 192.168.1.1  
+          **默认密码**: 无  
+          
+          ### 📜 更新记录
+          ${{ env.VERSION_INFO }}
+        files: ${{ env.FIRMWARE_PATH }}/*
