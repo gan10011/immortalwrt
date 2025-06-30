@@ -13,7 +13,7 @@ env:
   FIRMWARE_RELEASE: true
   FIRMWARE_TAG: ZN_M2-OWRT
   TZ: Asia/Shanghai
-  OWRT_BRANCH: openwrt-23.05  # 替换为实际的owrt分支名
+  OWRT_BRANCH: owrt  # 替换为实际的owrt分支名
 
 jobs:
   Build:
