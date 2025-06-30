@@ -8,7 +8,7 @@ on:
 permissions: write-all
 
 env:
-  CONFIG_FILE: .config
+  CONFIG_FILE: imm.config
   DIY_SCRIPT: ZN_M2-diy-script-lite.sh
   CLASH_KERNEL: amd64
   CACHE_TOOLCHAIN: true
